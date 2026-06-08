@@ -1,6 +1,5 @@
 import os
 import sys
-import argparse
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -28,10 +27,12 @@ class CentralizedTrafficEnvWrapper(gym.Env):
         self.base_env = base_env
         self.tls_ids = base_env.tls_ids
         
-        # 14 features (4 queues + 2 phase + 1 duration) * 2 feux
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(14,), dtype=np.float32
-        )
+        # Reset d'essai pour définir les espaces
+        initial_states = self.base_env.reset()
+        total_obs_dim = sum([len(state) for state in initial_states.values()])
+        self.base_env.close()
+        
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(total_obs_dim,), dtype=np.float32)
         self.action_space = spaces.MultiDiscrete([2] * len(self.tls_ids))
         
     def _flatten_obs(self, states_dict):
@@ -59,29 +60,23 @@ class CentralizedTrafficEnvWrapper(gym.Env):
 def make_env(rank):
     def _init():
         env = MultiAgentTrafficEnv(sumocfg_path=CONFIG_PATH, tls_ids=["B0", "C0"], gui=False)
-        # Note: Si ton wrapper supporte le rank, garde-le. Sinon, le port est géré par la config SUMO
+        # Injection du rank pour isoler les ports TraCI de chaque worker
         env.rank = rank 
         return CentralizedTrafficEnvWrapper(env)
     return _init
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Parallel CTCE Training for Boulevard")
-    parser.add_argument("--num_cpu", type=int, default=4, help="Nombre de processus parallèles")
-    args = parser.parse_args()
-
-    print(f"--- Running CTCE Training across {args.num_cpu} CPUs ---")
+    print("--- Running CTCE Training (Parallel PPO Boulevard) ---")
     
-    # 1. Parallélisation
-    raw_env = SubprocVecEnv([make_env(i) for i in range(args.num_cpu)])
+    num_cpu = 4
+    raw_env = SubprocVecEnv([make_env(i) for i in range(num_cpu)])
     
-    # 2. Normalisation
     env = VecNormalize(raw_env, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=50.0)
 
-    # 3. Callback sauvegarde (ajusté pour le nombre de CPU)
     checkpoint_cb = CheckpointCallback(
-        save_freq=100_000 // args.num_cpu, 
+        save_freq=50_000, 
         save_path=MODEL_DIR, 
-        name_prefix="ppo_centralized_boulevard_ckpt"
+        name_prefix="ppo_boulevard_centralized_ckpt"
     )
 
     model = PPO(
@@ -105,9 +100,10 @@ if __name__ == "__main__":
         callback=checkpoint_cb,
     )
 
-    final_model_path = os.path.join(MODEL_DIR, "ppo_centralized_final_parallel")
+    final_model_path = os.path.join(MODEL_DIR,"ppo_boulevard_centralized_2M_final")
     model.save(final_model_path)
-    env.save(os.path.join(MODEL_DIR, "ppo_centralized_vecnorm_parallel.pkl"))
+
+    env.save(os.path.join(MODEL_DIR,"ppo_boulevard_centralized_2M_vecnorm.pkl"))
     
     print("[SUCCESS] Modèle et normaliseur sauvegardés.")
     env.close()
